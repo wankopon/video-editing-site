@@ -11,9 +11,16 @@ const fs = require('fs');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ==============================
+// ======================================================
+// Render / Proxy 設定
+// ======================================================
+
+// Render はリバースプロキシ経由なので必要
+app.set('trust proxy', 1);
+
+// ======================================================
 // Neon PostgreSQL
-// ==============================
+// ======================================================
 
 if (!process.env.DATABASE_URL) {
   console.error('DATABASE_URL が設定されていません。');
@@ -27,9 +34,9 @@ const db = new Pool({
   }
 });
 
-// ==============================
+// ======================================================
 // アップロードフォルダ
-// ==============================
+// ======================================================
 
 const uploadDir = path.join(__dirname, 'uploads');
 
@@ -37,9 +44,9 @@ fs.mkdirSync(uploadDir, {
   recursive: true
 });
 
-// ==============================
-// DB初期化
-// ==============================
+// ======================================================
+// DB 初期化
+// ======================================================
 
 async function initDatabase() {
   await db.query(`
@@ -62,31 +69,49 @@ async function initDatabase() {
   console.log('Neon PostgreSQL connected');
 }
 
-// ==============================
+// ======================================================
 // Express
-// ==============================
+// ======================================================
 
 app.use(express.urlencoded({
   extended: true
 }));
 
+// ======================================================
+// セッション
+// ======================================================
+
 app.use(session({
   secret: process.env.SESSION_SECRET || 'dev-secret-change-me',
+
   resave: false,
   saveUninitialized: false,
+
+  // Render の HTTPS / Proxy 対応
+  proxy: true,
+
   cookie: {
     httpOnly: true,
     sameSite: 'lax',
+
+    // Render は HTTPS
     secure: process.env.NODE_ENV === 'production',
+
     maxAge: 8 * 60 * 60 * 1000
   }
 }));
 
-app.use(express.static(path.join(__dirname, 'public')));
+// ======================================================
+// public
+// ======================================================
 
-// ==============================
+app.use(express.static(
+  path.join(__dirname, 'public')
+));
+
+// ======================================================
 // 動画アップロード
-// ==============================
+// ======================================================
 
 const allowed = [
   '.mp4',
@@ -98,20 +123,24 @@ const allowed = [
 ];
 
 const storage = multer.diskStorage({
+
   destination: uploadDir,
 
   filename: (req, file, cb) => {
-    cb(
-      null,
+
+    const filename =
       Date.now() +
       '-' +
       Math.random().toString(36).slice(2) +
-      path.extname(file.originalname).toLowerCase()
-    );
+      path.extname(file.originalname).toLowerCase();
+
+    cb(null, filename);
   }
+
 });
 
 const upload = multer({
+
   storage,
 
   limits: {
@@ -119,37 +148,43 @@ const upload = multer({
   },
 
   fileFilter: (req, file, cb) => {
-    if (
-      allowed.includes(
-        path.extname(file.originalname).toLowerCase()
-      )
-    ) {
+
+    const ext =
+      path.extname(file.originalname).toLowerCase();
+
+    if (allowed.includes(ext)) {
+
       cb(null, true);
+
     } else {
+
       cb(
         new Error(
           '動画ファイルは mp4 / mov / m4v / avi / mkv / webm のみ対応です。'
         )
       );
+
     }
   }
+
 });
 
-// ==============================
+// ======================================================
 // 管理画面認証
-// ==============================
+// ======================================================
 
 function auth(req, res, next) {
-  if (req.session.admin) {
+
+  if (req.session && req.session.admin === true) {
     return next();
   }
 
   res.redirect('/admin/login');
 }
 
-// ==============================
+// ======================================================
 // メール通知
-// ==============================
+// ======================================================
 
 async function notify(r) {
 
@@ -160,19 +195,29 @@ async function notify(r) {
     return;
   }
 
-  const t = nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: Number(process.env.SMTP_PORT || 587),
-    secure: String(process.env.SMTP_SECURE) === 'true',
+  const transporter =
+    nodemailer.createTransport({
 
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS
-    }
-  });
+      host: process.env.SMTP_HOST,
 
-  await t.sendMail({
+      port: Number(
+        process.env.SMTP_PORT || 587
+      ),
+
+      secure:
+        String(process.env.SMTP_SECURE) === 'true',
+
+      auth: {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS
+      }
+
+    });
+
+  await transporter.sendMail({
+
     from: process.env.SMTP_USER,
+
     to: process.env.NOTIFY_EMAIL,
 
     subject:
@@ -193,15 +238,18 @@ async function notify(r) {
 ${r.message}
 
 管理画面: /admin`
+
   });
+
 }
 
-// ==============================
+// ======================================================
 // 依頼受付
-// ==============================
+// ======================================================
 
 app.post(
   '/api/requests',
+
   upload.single('video'),
 
   async (req, res) => {
@@ -209,9 +257,15 @@ app.post(
     try {
 
       const r = {
+
         ...req.body,
-        filename: req.file?.filename || '',
-        originalname: req.file?.originalname || ''
+
+        filename:
+          req.file?.filename || '',
+
+        originalname:
+          req.file?.originalname || ''
+
       };
 
       if (
@@ -219,64 +273,75 @@ app.post(
         !r.email ||
         !r.message
       ) {
+
         throw new Error(
           '必須項目が不足しています。'
         );
+
       }
 
-      const result = await db.query(
-        `
-        INSERT INTO requests
-        (
-          name,
-          email,
-          type,
-          plan,
-          deadline,
-          budget,
-          message,
-          filename,
-          originalname
-        )
+      const result =
+        await db.query(
+          `
+          INSERT INTO requests
+          (
+            name,
+            email,
+            type,
+            plan,
+            deadline,
+            budget,
+            message,
+            filename,
+            originalname
+          )
 
-        VALUES
-        ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+          VALUES
+          ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 
-        RETURNING id
-        `,
-        [
-          r.name,
-          r.email,
-          r.type || '',
-          r.plan || '',
-          r.deadline || '',
-          r.budget || '',
-          r.message,
-          r.filename,
-          r.originalname
-        ]
-      );
+          RETURNING id
+          `,
+          [
+            r.name,
+            r.email,
+            r.type || '',
+            r.plan || '',
+            r.deadline || '',
+            r.budget || '',
+            r.message,
+            r.filename,
+            r.originalname
+          ]
+        );
 
-      r.id = result.rows[0].id;
+      r.id =
+        result.rows[0].id;
 
       try {
+
         await notify(r);
+
       } catch (e) {
+
         console.error(
           'Email notification failed:',
           e.message
         );
+
       }
 
       res.send(`
 <!doctype html>
+
 <meta charset="utf-8">
 
-<title>送信完了</title>
+<title>
+送信完了
+</title>
 
 <link
-  rel="stylesheet"
-  href="/style.css"
+rel="stylesheet"
+href="/style.css"
 >
 
 <main class="result">
@@ -297,8 +362,8 @@ THANK YOU
 </p>
 
 <a
-  class="btn primary"
-  href="/"
+class="btn primary"
+href="/"
 >
 トップへ戻る
 </a>
@@ -318,8 +383,8 @@ THANK YOU
 <meta charset="utf-8">
 
 <link
-  rel="stylesheet"
-  href="/style.css"
+rel="stylesheet"
+href="/style.css"
 >
 
 <main class="result">
@@ -335,8 +400,8 @@ ${String(e.message).replace(/[<>]/g, '')}
 </p>
 
 <a
-  class="btn secondary"
-  href="/"
+class="btn secondary"
+href="/"
 >
 戻る
 </a>
@@ -345,18 +410,30 @@ ${String(e.message).replace(/[<>]/g, '')}
 
 </main>
       `);
+
     }
+
   }
 );
 
-// ==============================
+// ======================================================
 // 管理画面ログイン
-// ==============================
+// ======================================================
 
 app.get(
   '/admin/login',
 
   (req, res) => {
+
+    // すでにログイン済みなら管理画面へ
+    if (
+      req.session &&
+      req.session.admin === true
+    ) {
+
+      return res.redirect('/admin');
+
+    }
 
     res.send(`
 <!doctype html>
@@ -368,15 +445,16 @@ app.get(
 </title>
 
 <link
-  rel="stylesheet"
-  href="/style.css"
+rel="stylesheet"
+href="/style.css"
 >
 
 <main class="result">
 
 <form
-  class="login-card"
-  method="post"
+class="login-card"
+method="post"
+action="/admin/login"
 >
 
 <p class="eyebrow">
@@ -388,19 +466,22 @@ ADMIN
 </h1>
 
 <label>
+
 パスワード
 
 <input
-  type="password"
-  name="password"
-  required
-  autofocus
+type="password"
+name="password"
+required
+autofocus
+autocomplete="current-password"
 >
 
 </label>
 
 <button
-  class="btn primary submit"
+class="btn primary submit"
+type="submit"
 >
 ログイン
 </button>
@@ -409,77 +490,163 @@ ADMIN
 
 </main>
     `);
+
   }
 );
+
+// ======================================================
+// 管理画面ログイン処理
+// ======================================================
 
 app.post(
   '/admin/login',
 
   (req, res) => {
 
+    const enteredPassword =
+      String(req.body.password || '');
+
+    const adminPassword =
+      String(process.env.ADMIN_PASSWORD || '');
+
+    // Render に ADMIN_PASSWORD がない場合
+    if (!adminPassword) {
+
+      console.error(
+        'ADMIN_PASSWORD が設定されていません。'
+      );
+
+      return res
+        .status(500)
+        .send(`
+<meta charset="utf-8">
+
+<h2>
+管理画面の設定エラー
+</h2>
+
+<p>
+ADMIN_PASSWORD が設定されていません。
+</p>
+
+<a href="/admin/login">
+戻る
+</a>
+        `);
+
+    }
+
+    // パスワード不一致
     if (
-      req.body.password &&
-      req.body.password ===
-      (process.env.ADMIN_PASSWORD || 'admin')
+      enteredPassword !== adminPassword
     ) {
 
-      req.session.admin = true;
+      return res
+        .status(401)
+        .send(`
+<meta charset="utf-8">
+
+<h2>
+パスワードが違います。
+</h2>
+
+<a href="/admin/login">
+戻る
+</a>
+        `);
+
+    }
+
+    // ログイン成功
+    req.session.admin = true;
+
+    // セッションを保存してから移動
+    req.session.save(err => {
+
+      if (err) {
+
+        console.error(
+          'Session save error:',
+          err
+        );
+
+        return res
+          .status(500)
+          .send(`
+<meta charset="utf-8">
+
+<h2>
+ログイン処理に失敗しました。
+</h2>
+
+<a href="/admin/login">
+戻る
+</a>
+          `);
+
+      }
 
       res.redirect('/admin');
 
-    } else {
+    });
 
-      res
-        .status(401)
-        .send(
-          '<p>パスワードが違います。<a href="/admin/login">戻る</a></p>'
-        );
-    }
   }
 );
 
-// ==============================
+// ======================================================
 // ログアウト
-// ==============================
+// ======================================================
 
 app.post(
   '/admin/logout',
+
   auth,
 
   (req, res) => {
 
     req.session.destroy(
-      () => res.redirect('/')
+      () => {
+
+        res.clearCookie(
+          'connect.sid'
+        );
+
+        res.redirect('/');
+
+      }
     );
+
   }
 );
 
-// ==============================
+// ======================================================
 // 管理画面
-// ==============================
+// ======================================================
 
 app.get(
   '/admin',
+
   auth,
 
   async (req, res) => {
 
     try {
 
-      const result = await db.query(
-        `
-        SELECT *
-        FROM requests
-        ORDER BY id DESC
-        `
-      );
+      const result =
+        await db.query(`
+          SELECT *
+          FROM requests
+          ORDER BY id DESC
+        `);
 
-      const rows = result.rows;
+      const rows =
+        result.rows;
 
       const esc = s =>
         String(s ?? '')
           .replace(
             /[&<>"']/g,
+
             c => ({
               '&': '&amp;',
               '<': '&lt;',
@@ -489,7 +656,10 @@ app.get(
             }[c])
           );
 
-      const list = rows.map(r => `
+      const list =
+        rows
+          .map(
+            r => `
 
 <article class="request">
 
@@ -506,11 +676,15 @@ ${esc(r.status)}
 </h2>
 
 <p>
+
 ${esc(
   r.created_at instanceof Date
-    ? r.created_at.toLocaleString('ja-JP', {
-        timeZone: 'Asia/Tokyo'
-      })
+    ? r.created_at.toLocaleString(
+        'ja-JP',
+        {
+          timeZone: 'Asia/Tokyo'
+        }
+      )
     : r.created_at
 )}
 
@@ -525,39 +699,48 @@ ${esc(r.email)}
 </div>
 
 <form
-  method="post"
-  action="/admin/status"
+method="post"
+action="/admin/status"
 >
 
 <input
-  type="hidden"
-  name="id"
-  value="${r.id}"
+type="hidden"
+name="id"
+value="${r.id}"
 >
 
 <select name="status">
 
 <option
-${r.status === 'new' ? 'selected' : ''}
+${r.status === 'new'
+  ? 'selected'
+  : ''}
+value="new"
 >
 new
 </option>
 
 <option
-${r.status === 'in_progress' ? 'selected' : ''}
+${r.status === 'in_progress'
+  ? 'selected'
+  : ''}
+value="in_progress"
 >
 in_progress
 </option>
 
 <option
-${r.status === 'done' ? 'selected' : ''}
+${r.status === 'done'
+  ? 'selected'
+  : ''}
+value="done"
 >
 done
 </option>
 
 </select>
 
-<button>
+<button type="submit">
 更新
 </button>
 
@@ -598,7 +781,9 @@ ${
     ? `
 <p>
 📎
-<a href="/admin/files/${encodeURIComponent(r.filename)}">
+<a
+href="/admin/files/${encodeURIComponent(r.filename)}"
+>
 ${esc(r.originalname)}
 </a>
 </p>
@@ -608,10 +793,11 @@ ${esc(r.originalname)}
 
 </article>
 
-      `).join('');
+            `
+          )
+          .join('');
 
       res.send(`
-
 <!doctype html>
 
 <meta charset="utf-8">
@@ -621,15 +807,15 @@ ${esc(r.originalname)}
 </title>
 
 <link
-  rel="stylesheet"
-  href="/style.css"
+rel="stylesheet"
+href="/style.css"
 >
 
 <header class="header">
 
 <a
-  class="logo"
-  href="/"
+class="logo"
+href="/"
 >
 EDIT LAB
 </a>
@@ -639,12 +825,15 @@ EDIT LAB
 管理画面
 
 <form
-  style="display:inline"
-  method="post"
-  action="/admin/logout"
+style="display:inline"
+method="post"
+action="/admin/logout"
 >
 
-<button class="logout">
+<button
+class="logout"
+type="submit"
+>
 ログアウト
 </button>
 
@@ -675,8 +864,8 @@ ${rows.length}件の依頼
 </div>
 
 <a
-  class="btn secondary"
-  href="/"
+class="btn secondary"
+href="/"
 >
 サイトを見る
 </a>
@@ -700,21 +889,42 @@ ${
         .send(
           'データベースの読み込みに失敗しました。'
         );
+
     }
+
   }
 );
 
-// ==============================
+// ======================================================
 // ステータス変更
-// ==============================
+// ======================================================
 
 app.post(
   '/admin/status',
+
   auth,
 
   async (req, res) => {
 
     try {
+
+      const allowedStatuses = [
+        'new',
+        'in_progress',
+        'done'
+      ];
+
+      if (
+        !allowedStatuses.includes(
+          req.body.status
+        )
+      ) {
+
+        return res
+          .status(400)
+          .send('不正なステータスです。');
+
+      }
 
       await db.query(
         `
@@ -739,37 +949,50 @@ app.post(
         .send(
           'ステータス更新に失敗しました。'
         );
+
     }
+
   }
 );
 
-// ==============================
-// ファイルDL
-// ==============================
+// ======================================================
+// ファイルダウンロード
+// ======================================================
 
 app.get(
   '/admin/files/:name',
+
   auth,
 
   (req, res) => {
 
     const safe =
-      path.basename(req.params.name);
+      path.basename(
+        req.params.name
+      );
 
-    const f =
-      path.join(uploadDir, safe);
+    const filePath =
+      path.join(
+        uploadDir,
+        safe
+      );
 
-    if (!fs.existsSync(f)) {
+    if (
+      !fs.existsSync(filePath)
+    ) {
+
       return res.sendStatus(404);
+
     }
 
-    res.download(f);
+    res.download(filePath);
+
   }
 );
 
-// ==============================
+// ======================================================
 // エラー処理
-// ==============================
+// ======================================================
 
 app.use(
   (err, req, res, next) => {
@@ -782,14 +1005,16 @@ app.use(
         '<p>' +
         String(err.message)
           .replace(/[<>]/g, '') +
-        '</p><p><a href="/">戻る</a></p>'
+        '</p>' +
+        '<p><a href="/">戻る</a></p>'
       );
+
   }
 );
 
-// ==============================
+// ======================================================
 // 起動
-// ==============================
+// ======================================================
 
 async function start() {
 
@@ -799,11 +1024,13 @@ async function start() {
 
     app.listen(
       PORT,
+
       () => {
 
         console.log(
           `EDIT LAB running on port ${PORT}`
         );
+
       }
     );
 
@@ -815,7 +1042,9 @@ async function start() {
     );
 
     process.exit(1);
+
   }
+
 }
 
 start();
