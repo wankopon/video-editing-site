@@ -6,12 +6,11 @@
     "start": "node server.js"
   },
   "dependencies": {
-    "better-sqlite3": "^11.7.0",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "express-session": "^1.18.1",
     "multer": "^1.4.5-lts.1",
-    "nodemailer": "^6.9.16",
-    "pg": "^8.16.3"
+    "pg": "^8.16.3",
+    "resend": "^6.0.2"
   }
 }
