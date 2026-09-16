@@ -4,18 +4,19 @@ const express = require('express');
 const session = require('express-session');
 const multer = require('multer');
 const { Pool } = require('pg');
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
 const path = require('path');
 const fs = require('fs');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+const resend = new Resend(process.env.RESEND_API_KEY);
+
 // ======================================================
-// Render / Proxy 設定
+// Render / Proxy
 // ======================================================
 
-// Render はリバースプロキシ経由なので必要
 app.set('trust proxy', 1);
 
 // ======================================================
@@ -45,7 +46,7 @@ fs.mkdirSync(uploadDir, {
 });
 
 // ======================================================
-// DB 初期化
+// DB初期化
 // ======================================================
 
 async function initDatabase() {
@@ -77,62 +78,45 @@ app.use(express.urlencoded({
   extended: true
 }));
 
-// ======================================================
-// セッション
-// ======================================================
+app.use(express.json());
 
 app.use(session({
-  secret: process.env.SESSION_SECRET || 'dev-secret-change-me',
+  secret:
+    process.env.SESSION_SECRET ||
+    'edit-lab-session-secret-change-me',
 
   resave: false,
   saveUninitialized: false,
 
-  // Render の HTTPS / Proxy 対応
-  proxy: true,
-
   cookie: {
     httpOnly: true,
     sameSite: 'lax',
-
-    // Render は HTTPS
     secure: process.env.NODE_ENV === 'production',
-
-    maxAge: 8 * 60 * 60 * 1000
+    maxAge: 1000 * 60 * 60 * 12
   }
 }));
 
 // ======================================================
-// public
+// Multer
 // ======================================================
-
-app.use(express.static(
-  path.join(__dirname, 'public')
-));
-
-// ======================================================
-// 動画アップロード
-// ======================================================
-
-const allowed = [
-  '.mp4',
-  '.mov',
-  '.m4v',
-  '.avi',
-  '.mkv',
-  '.webm'
-];
 
 const storage = multer.diskStorage({
 
-  destination: uploadDir,
+  destination: function (req, file, cb) {
+    cb(null, uploadDir);
+  },
 
-  filename: (req, file, cb) => {
+  filename: function (req, file, cb) {
+
+    const ext = path.extname(file.originalname);
 
     const filename =
       Date.now() +
       '-' +
-      Math.random().toString(36).slice(2) +
-      path.extname(file.originalname).toLowerCase();
+      Math.random()
+        .toString(36)
+        .substring(2, 10) +
+      ext;
 
     cb(null, filename);
   }
@@ -140,145 +124,1119 @@ const storage = multer.diskStorage({
 });
 
 const upload = multer({
-
   storage,
-
   limits: {
-    fileSize: 2 * 1024 * 1024 * 1024
-  },
-
-  fileFilter: (req, file, cb) => {
-
-    const ext =
-      path.extname(file.originalname).toLowerCase();
-
-    if (allowed.includes(ext)) {
-
-      cb(null, true);
-
-    } else {
-
-      cb(
-        new Error(
-          '動画ファイルは mp4 / mov / m4v / avi / mkv / webm のみ対応です。'
-        )
-      );
-
-    }
+    fileSize: 1024 * 1024 * 1024
   }
-
 });
 
 // ======================================================
-// 管理画面認証
+// 管理者認証
 // ======================================================
 
-function auth(req, res, next) {
+function requireAdmin(req, res, next) {
 
-  if (req.session && req.session.admin === true) {
-    return next();
+  if (!req.session.admin) {
+    return res.redirect('/admin/login');
   }
 
-  res.redirect('/admin/login');
+  next();
 }
 
 // ======================================================
-// メール通知
+// HTML共通
+// ======================================================
+
+function escapeHtml(value) {
+
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
+}
+
+function layout(title, body) {
+
+  return `
+<!DOCTYPE html>
+
+<html lang="ja">
+
+<head>
+
+<meta charset="UTF-8">
+
+<meta
+  name="viewport"
+  content="width=device-width, initial-scale=1.0"
+>
+
+<title>${escapeHtml(title)}</title>
+
+<style>
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    "Noto Sans JP",
+    sans-serif;
+
+  background: #ffffff;
+  color: #111111;
+}
+
+a {
+  color: inherit;
+}
+
+.header {
+
+  height: 72px;
+
+  border-bottom:
+    1px solid #eeeeee;
+
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+
+  padding:
+    0 6vw;
+
+  background:
+    rgba(255,255,255,.96);
+
+  position:
+    sticky;
+
+  top: 0;
+
+  z-index: 100;
+}
+
+.logo {
+
+  font-weight: 800;
+
+  letter-spacing:
+    .12em;
+
+  text-decoration: none;
+}
+
+.nav {
+
+  display: flex;
+
+  align-items: center;
+
+  gap: 26px;
+
+  font-size:
+    14px;
+}
+
+.nav a {
+
+  text-decoration:
+    none;
+}
+
+.container {
+
+  width:
+    min(1040px, 90%);
+
+  margin:
+    0 auto;
+}
+
+.hero {
+
+  padding:
+    110px 0 80px;
+}
+
+.eyebrow {
+
+  font-size:
+    12px;
+
+  letter-spacing:
+    .22em;
+
+  font-weight:
+    700;
+
+  color:
+    #666;
+}
+
+h1 {
+
+  font-size:
+    clamp(
+      38px,
+      6vw,
+      76px
+    );
+
+  line-height:
+    1.05;
+
+  margin:
+    20px 0;
+}
+
+h2 {
+
+  font-size:
+    34px;
+
+  margin:
+    0 0 25px;
+}
+
+p {
+
+  line-height:
+    1.8;
+}
+
+.button {
+
+  display:
+    inline-flex;
+
+  align-items:
+    center;
+
+  justify-content:
+    center;
+
+  min-height:
+    48px;
+
+  padding:
+    0 24px;
+
+  border:
+    1px solid #111;
+
+  border-radius:
+    999px;
+
+  background:
+    #111;
+
+  color:
+    white;
+
+  text-decoration:
+    none;
+
+  cursor:
+    pointer;
+
+  font-weight:
+    700;
+}
+
+.button.white {
+
+  background:
+    white;
+
+  color:
+    #111;
+}
+
+.section {
+
+  padding:
+    80px 0;
+}
+
+.grid {
+
+  display:
+    grid;
+
+  grid-template-columns:
+    repeat(
+      3,
+      minmax(0, 1fr)
+    );
+
+  gap:
+    20px;
+}
+
+.card {
+
+  border:
+    1px solid #e7e7e7;
+
+  border-radius:
+    20px;
+
+  padding:
+    28px;
+
+  background:
+    #fff;
+}
+
+.card h3 {
+
+  margin-top:
+    0;
+
+  font-size:
+    22px;
+}
+
+.form {
+
+  max-width:
+    760px;
+}
+
+.field {
+
+  margin-bottom:
+    24px;
+}
+
+label {
+
+  display:
+    block;
+
+  font-weight:
+    700;
+
+  margin-bottom:
+    8px;
+}
+
+input,
+select,
+textarea {
+
+  width:
+    100%;
+
+  border:
+    1px solid #ccc;
+
+  border-radius:
+    12px;
+
+  padding:
+    14px 16px;
+
+  font:
+    inherit;
+
+  background:
+    #fff;
+}
+
+textarea {
+
+  min-height:
+    160px;
+
+  resize:
+    vertical;
+}
+
+.notice {
+
+  background:
+    #f7f7f7;
+
+  border-radius:
+    16px;
+
+  padding:
+    18px 20px;
+
+  margin:
+    20px 0;
+}
+
+.admin-card {
+
+  border:
+    1px solid #e4e4e4;
+
+  border-radius:
+    18px;
+
+  padding:
+    22px;
+
+  margin-bottom:
+    18px;
+}
+
+.admin-top {
+
+  display:
+    flex;
+
+  align-items:
+    flex-start;
+
+  justify-content:
+    space-between;
+
+  gap:
+    20px;
+}
+
+.badge {
+
+  display:
+    inline-block;
+
+  background:
+    #111;
+
+  color:
+    #fff;
+
+  border-radius:
+    999px;
+
+  padding:
+    4px 10px;
+
+  font-size:
+    11px;
+
+  margin-bottom:
+    10px;
+}
+
+.info-grid {
+
+  display:
+    grid;
+
+  grid-template-columns:
+    repeat(
+      4,
+      minmax(0, 1fr)
+    );
+
+  gap:
+    10px;
+
+  margin-top:
+    16px;
+}
+
+.info {
+
+  background:
+    #f7f7f7;
+
+  border-radius:
+    12px;
+
+  padding:
+    12px;
+}
+
+.info strong {
+
+  display:
+    block;
+
+  font-size:
+    12px;
+
+  color:
+    #666;
+
+  margin-bottom:
+    5px;
+}
+
+.message {
+
+  margin-top:
+    14px;
+
+  background:
+    #fafafa;
+
+  border-radius:
+    12px;
+
+  padding:
+    16px;
+
+  white-space:
+    pre-wrap;
+}
+
+.small {
+
+  color:
+    #666;
+
+  font-size:
+    14px;
+}
+
+.footer {
+
+  border-top:
+    1px solid #eee;
+
+  margin-top:
+    80px;
+
+  padding:
+    35px 0;
+
+  color:
+    #666;
+
+  font-size:
+    13px;
+}
+
+.login-wrap {
+
+  min-height:
+    calc(100vh - 72px);
+
+  display:
+    grid;
+
+  place-items:
+    center;
+
+  padding:
+    30px;
+}
+
+.login-card {
+
+  width:
+    min(540px, 100%);
+
+  border:
+    1px solid #e5e5e5;
+
+  border-radius:
+    20px;
+
+  padding:
+    44px;
+}
+
+.status-form {
+
+  display:
+    flex;
+
+  gap:
+    8px;
+}
+
+.status-form select {
+
+  min-width:
+    100px;
+}
+
+.status-form button {
+
+  border:
+    1px solid #ddd;
+
+  background:
+    white;
+
+  border-radius:
+    8px;
+
+  padding:
+    8px 12px;
+
+  cursor:
+    pointer;
+}
+
+.error {
+
+  color:
+    #b00020;
+
+  margin:
+    15px 0;
+}
+
+@media (
+  max-width: 800px
+) {
+
+  .grid {
+    grid-template-columns:
+      1fr;
+  }
+
+  .info-grid {
+    grid-template-columns:
+      1fr 1fr;
+  }
+
+  .admin-top {
+    flex-direction:
+      column;
+  }
+
+}
+
+</style>
+
+</head>
+
+<body>
+
+<header class="header">
+
+<a
+  class="logo"
+  href="/"
+>
+EDIT LAB
+</a>
+
+<nav class="nav">
+
+<a href="/">ホーム</a>
+
+<a href="/request">
+依頼する
+</a>
+
+</nav>
+
+</header>
+
+${body}
+
+</body>
+
+</html>
+`;
+}
+
+// ======================================================
+// Resend メール通知
 // ======================================================
 
 async function notify(r) {
 
   if (
-    !process.env.SMTP_HOST ||
+    !process.env.RESEND_API_KEY ||
     !process.env.NOTIFY_EMAIL
   ) {
+
+    console.log(
+      'RESEND_API_KEY または NOTIFY_EMAIL が設定されていないためメール通知をスキップしました。'
+    );
+
     return;
   }
 
-  const transporter =
-    nodemailer.createTransport({
+  try {
 
-      host: process.env.SMTP_HOST,
+    const result =
+      await resend.emails.send({
 
-      port: Number(
-        process.env.SMTP_PORT || 587
-      ),
+        from:
+          'EDIT LAB <onboarding@resend.dev>',
 
-      secure:
-        String(process.env.SMTP_SECURE) === 'true',
+        to: [
+          process.env.NOTIFY_EMAIL
+        ],
 
-      auth: {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS
-      }
+        subject:
+          `【動画編集依頼】${r.name}様から新規依頼`,
 
-    });
+        text:
+`新しい動画編集依頼が届きました。
 
-  await transporter.sendMail({
+依頼ID:
+${r.id}
 
-    from: process.env.SMTP_USER,
+お名前:
+${r.name}
 
-    to: process.env.NOTIFY_EMAIL,
+メール:
+${r.email}
 
-    subject:
-      `【動画編集依頼】${r.name}様から新規依頼`,
+種類:
+${r.type || '未指定'}
 
-    text:
-`新しい依頼が届きました。
+プラン:
+${r.plan || '未指定'}
 
-お名前: ${r.name}
-メール: ${r.email}
-種類: ${r.type}
-プラン: ${r.plan}
-納期: ${r.deadline}
-予算: ${r.budget}
-ファイル: ${r.originalname || 'なし'}
+納期:
+${r.deadline || '未指定'}
+
+予算:
+${r.budget || '未指定'}
+
+ファイル:
+${r.originalname || 'なし'}
 
 内容:
-${r.message}
+${r.message || 'なし'}
 
-管理画面: /admin`
+----------------------------
 
-  });
+EDIT LAB 管理画面
 
+https://video-editing-site.onrender.com/admin
+`
+
+      });
+
+    if (result.error) {
+
+      console.error(
+        'Resend email failed:',
+        result.error
+      );
+
+      return;
+    }
+
+    console.log(
+      'Resend email sent:',
+      result.data
+    );
+
+  } catch (error) {
+
+    console.error(
+      'Resend email failed:',
+      error
+    );
+  }
 }
+
+// ======================================================
+// TOP
+// ======================================================
+
+app.get('/', (req, res) => {
+
+  res.send(
+    layout(
+      'EDIT LAB | 動画編集サービス',
+      `
+
+<main>
+
+<section class="hero">
+
+<div class="container">
+
+<div class="eyebrow">
+VIDEO EDITING SERVICE
+</div>
+
+<h1>
+あなたの映像を、<br>
+もっと伝わる形へ。
+</h1>
+
+<p>
+YouTube・SNS・ショート動画など、
+目的に合わせた動画編集を承ります。
+</p>
+
+<p style="margin-top:30px">
+
+<a
+  class="button"
+  href="/request"
+>
+動画編集を依頼する
+</a>
+
+</p>
+
+</div>
+
+</section>
+
+<section class="section">
+
+<div class="container">
+
+<div class="eyebrow">
+SERVICE
+</div>
+
+<h2>
+対応サービス
+</h2>
+
+<div class="grid">
+
+<div class="card">
+
+<h3>YouTube編集</h3>
+
+<p>
+カット、テロップ、
+BGM、SEなどを含む
+YouTube向け動画編集。
+</p>
+
+</div>
+
+<div class="card">
+
+<h3>ショート動画</h3>
+
+<p>
+TikTok・YouTube Shorts・
+Instagram Reels向けの
+縦型動画編集。
+</p>
+
+</div>
+
+<div class="card">
+
+<h3>SNS / PR動画</h3>
+
+<p>
+商品紹介やサービス紹介など、
+目的に合わせた動画を制作します。
+</p>
+
+</div>
+
+</div>
+
+</div>
+
+</section>
+
+<section class="section">
+
+<div class="container">
+
+<div class="eyebrow">
+REQUEST
+</div>
+
+<h2>
+編集のご依頼
+</h2>
+
+<p>
+動画の種類・納期・予算などを
+フォームからお送りください。
+</p>
+
+<a
+  class="button"
+  href="/request"
+>
+依頼フォームへ
+</a>
+
+</div>
+
+</section>
+
+</main>
+
+<footer class="footer">
+
+<div class="container">
+
+© EDIT LAB
+
+</div>
+
+</footer>
+`
+    )
+  );
+});
+
+// ======================================================
+// 依頼フォーム
+// ======================================================
+
+app.get('/request', (req, res) => {
+
+  res.send(
+    layout(
+      '動画編集のご依頼 | EDIT LAB',
+      `
+
+<main class="section">
+
+<div class="container">
+
+<div class="eyebrow">
+REQUEST
+</div>
+
+<h2>
+動画編集のご依頼
+</h2>
+
+<p>
+内容を確認後、
+ご入力いただいたメールアドレスへ
+ご連絡いたします。
+</p>
+
+<form
+  class="form"
+  action="/request"
+  method="POST"
+  enctype="multipart/form-data"
+>
+
+<div class="field">
+
+<label>
+お名前 *
+</label>
+
+<input
+  type="text"
+  name="name"
+  required
+>
+
+</div>
+
+<div class="field">
+
+<label>
+メールアドレス *
+</label>
+
+<input
+  type="email"
+  name="email"
+  required
+>
+
+</div>
+
+<div class="field">
+
+<label>
+動画の種類
+</label>
+
+<select name="type">
+
+<option value="">
+選択してください
+</option>
+
+<option value="YouTube">
+YouTube
+</option>
+
+<option value="ショート動画">
+ショート動画
+</option>
+
+<option value="SNS動画">
+SNS動画
+</option>
+
+<option value="PR動画">
+PR動画
+</option>
+
+<option value="その他">
+その他
+</option>
+
+</select>
+
+</div>
+
+<div class="field">
+
+<label>
+プラン
+</label>
+
+<select name="plan">
+
+<option value="未定・相談したい">
+未定・相談したい
+</option>
+
+<option value="ライト">
+ライト
+</option>
+
+<option value="スタンダード">
+スタンダード
+</option>
+
+<option value="プレミアム">
+プレミアム
+</option>
+
+</select>
+
+</div>
+
+<div class="field">
+
+<label>
+希望納期
+</label>
+
+<input
+  type="text"
+  name="deadline"
+  placeholder="例：1週間以内"
+>
+
+</div>
+
+<div class="field">
+
+<label>
+予算
+</label>
+
+<input
+  type="text"
+  name="budget"
+  placeholder="例：1万円前後"
+>
+
+</div>
+
+<div class="field">
+
+<label>
+依頼内容 *
+</label>
+
+<textarea
+  name="message"
+  required
+  placeholder="編集内容やご希望をご記入ください"
+></textarea>
+
+</div>
+
+<div class="field">
+
+<label>
+動画ファイル
+</label>
+
+<input
+  type="file"
+  name="video"
+>
+
+<p class="small">
+大容量ファイルの場合は
+アップロードに時間がかかる場合があります。
+</p>
+
+</div>
+
+<button
+  class="button"
+  type="submit"
+>
+依頼を送信する
+</button>
+
+</form>
+
+</div>
+
+</main>
+`
+    )
+  );
+});
 
 // ======================================================
 // 依頼受付
 // ======================================================
 
 app.post(
-  '/api/requests',
-
+  '/request',
   upload.single('video'),
-
   async (req, res) => {
 
     try {
 
-      const r = {
-
-        ...req.body,
-
-        filename:
-          req.file?.filename || '',
-
-        originalname:
-          req.file?.originalname || ''
-
-      };
+      const {
+        name,
+        email,
+        type,
+        plan,
+        deadline,
+        budget,
+        message
+      } = req.body;
 
       if (
-        !r.name ||
-        !r.email ||
-        !r.message
+        !name ||
+        !email ||
+        !message
       ) {
 
-        throw new Error(
-          '必須項目が不足しています。'
-        );
-
+        return res
+          .status(400)
+          .send(
+            '必須項目を入力してください。'
+          );
       }
+
+      const filename =
+        req.file
+          ? req.file.filename
+          : null;
+
+      const originalname =
+        req.file
+          ? req.file.originalname
+          : null;
 
       const result =
         await db.query(
@@ -295,124 +1253,89 @@ app.post(
             filename,
             originalname
           )
-
           VALUES
-          ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-
-          RETURNING id
+          (
+            $1,$2,$3,$4,$5,
+            $6,$7,$8,$9
+          )
+          RETURNING *
           `,
           [
-            r.name,
-            r.email,
-            r.type || '',
-            r.plan || '',
-            r.deadline || '',
-            r.budget || '',
-            r.message,
-            r.filename,
-            r.originalname
+            name,
+            email,
+            type || '',
+            plan || '',
+            deadline || '',
+            budget || '',
+            message,
+            filename,
+            originalname
           ]
         );
 
-      r.id =
-        result.rows[0].id;
+      const requestData =
+        result.rows[0];
 
-      try {
+      // メール通知
+      // 失敗しても依頼自体は保存済みなので
+      // フォーム送信を失敗扱いにしない
+      await notify(requestData);
 
-        await notify(r);
+      res.send(
+        layout(
+          '送信完了 | EDIT LAB',
+          `
 
-      } catch (e) {
+<main class="section">
 
-        console.error(
-          'Email notification failed:',
-          e.message
-        );
+<div class="container">
 
-      }
-
-      res.send(`
-<!doctype html>
-
-<meta charset="utf-8">
-
-<title>
-送信完了
-</title>
-
-<link
-rel="stylesheet"
-href="/style.css"
->
-
-<main class="result">
-
-<div class="result-card">
-
-<p class="eyebrow">
+<div class="eyebrow">
 THANK YOU
-</p>
+</div>
 
-<h1>
-お問い合わせを受け付けました。
-</h1>
+<h2>
+送信が完了しました。
+</h2>
 
 <p>
-ご依頼内容を確認のうえ、
-担当者からご連絡します。
+ご依頼ありがとうございます。<br>
+内容を確認後、
+ご入力いただいたメールアドレスへ
+ご連絡いたします。
 </p>
 
+<p style="margin-top:30px">
+
 <a
-class="btn primary"
-href="/"
+  class="button"
+  href="/"
 >
 トップへ戻る
 </a>
 
-</div>
-
-</main>
-      `);
-
-    } catch (e) {
-
-      console.error(e);
-
-      res.status(400).send(`
-<!doctype html>
-
-<meta charset="utf-8">
-
-<link
-rel="stylesheet"
-href="/style.css"
->
-
-<main class="result">
-
-<div class="result-card">
-
-<h1>
-送信できませんでした
-</h1>
-
-<p>
-${String(e.message).replace(/[<>]/g, '')}
 </p>
 
-<a
-class="btn secondary"
-href="/"
->
-戻る
-</a>
-
 </div>
 
 </main>
-      `);
+`
+        )
+      );
 
+    } catch (error) {
+
+      console.error(
+        'Request save error:',
+        error
+      );
+
+      res
+        .status(500)
+        .send(
+          '依頼の送信中にエラーが発生しました。'
+        );
     }
-
   }
 );
 
@@ -422,174 +1345,103 @@ href="/"
 
 app.get(
   '/admin/login',
-
   (req, res) => {
 
-    // すでにログイン済みなら管理画面へ
-    if (
-      req.session &&
-      req.session.admin === true
-    ) {
+    const error =
+      req.query.error
+        ? '<div class="error">パスワードが違います。</div>'
+        : '';
 
-      return res.redirect('/admin');
+    res.send(
+      layout(
+        '管理画面ログイン',
+        `
 
-    }
+<div class="login-wrap">
 
-    res.send(`
-<!doctype html>
+<div class="login-card">
 
-<meta charset="utf-8">
+<div class="eyebrow">
+ADMIN
+</div>
 
-<title>
-管理画面ログイン
-</title>
+<h2>
+管理画面
+</h2>
 
-<link
-rel="stylesheet"
-href="/style.css"
->
-
-<main class="result">
+${error}
 
 <form
-class="login-card"
-method="post"
-action="/admin/login"
+  action="/admin/login"
+  method="POST"
 >
 
-<p class="eyebrow">
-ADMIN
-</p>
-
-<h1>
-管理画面
-</h1>
+<div class="field">
 
 <label>
-
 パスワード
-
-<input
-type="password"
-name="password"
-required
-autofocus
-autocomplete="current-password"
->
-
 </label>
 
+<input
+  type="password"
+  name="password"
+  required
+>
+
+</div>
+
 <button
-class="btn primary submit"
-type="submit"
+  class="button"
+  style="width:100%"
+  type="submit"
 >
 ログイン
 </button>
 
 </form>
 
-</main>
-    `);
+</div>
 
+</div>
+`
+      )
+    );
   }
 );
 
-// ======================================================
-// 管理画面ログイン処理
-// ======================================================
-
 app.post(
   '/admin/login',
-
   (req, res) => {
 
-    const enteredPassword =
-      String(req.body.password || '');
+    const password =
+      req.body.password;
 
-    const adminPassword =
-      String(process.env.ADMIN_PASSWORD || '');
-
-    // Render に ADMIN_PASSWORD がない場合
-    if (!adminPassword) {
-
-      console.error(
-        'ADMIN_PASSWORD が設定されていません。'
-      );
-
-      return res
-        .status(500)
-        .send(`
-<meta charset="utf-8">
-
-<h2>
-管理画面の設定エラー
-</h2>
-
-<p>
-ADMIN_PASSWORD が設定されていません。
-</p>
-
-<a href="/admin/login">
-戻る
-</a>
-        `);
-
-    }
-
-    // パスワード不一致
     if (
-      enteredPassword !== adminPassword
+      !process.env.ADMIN_PASSWORD
     ) {
 
       return res
-        .status(401)
-        .send(`
-<meta charset="utf-8">
-
-<h2>
-パスワードが違います。
-</h2>
-
-<a href="/admin/login">
-戻る
-</a>
-        `);
-
+        .status(500)
+        .send(
+          'ADMIN_PASSWORD が設定されていません。'
+        );
     }
 
-    // ログイン成功
-    req.session.admin = true;
+    if (
+      password ===
+      process.env.ADMIN_PASSWORD
+    ) {
 
-    // セッションを保存してから移動
-    req.session.save(err => {
+      req.session.admin = true;
 
-      if (err) {
+      return res.redirect(
+        '/admin'
+      );
+    }
 
-        console.error(
-          'Session save error:',
-          err
-        );
-
-        return res
-          .status(500)
-          .send(`
-<meta charset="utf-8">
-
-<h2>
-ログイン処理に失敗しました。
-</h2>
-
-<a href="/admin/login">
-戻る
-</a>
-          `);
-
-      }
-
-      res.redirect('/admin');
-
-    });
-
+    res.redirect(
+      '/admin/login?error=1'
+    );
   }
 );
 
@@ -597,25 +1449,18 @@ ADMIN_PASSWORD が設定されていません。
 // ログアウト
 // ======================================================
 
-app.post(
+app.get(
   '/admin/logout',
-
-  auth,
-
   (req, res) => {
 
     req.session.destroy(
       () => {
 
-        res.clearCookie(
-          'connect.sid'
+        res.redirect(
+          '/admin/login'
         );
-
-        res.redirect('/');
-
       }
     );
-
   }
 );
 
@@ -625,115 +1470,136 @@ app.post(
 
 app.get(
   '/admin',
-
-  auth,
-
+  requireAdmin,
   async (req, res) => {
 
     try {
 
       const result =
-        await db.query(`
+        await db.query(
+          `
           SELECT *
           FROM requests
-          ORDER BY id DESC
-        `);
+          ORDER BY created_at DESC
+          `
+        );
 
-      const rows =
+      const requests =
         result.rows;
 
-      const esc = s =>
-        String(s ?? '')
-          .replace(
-            /[&<>"']/g,
+      const cards =
+        requests
+          .map(r => {
 
-            c => ({
-              '&': '&amp;',
-              '<': '&lt;',
-              '>': '&gt;',
-              '"': '&quot;',
-              "'": '&#39;'
-            }[c])
-          );
+            const created =
+              new Date(
+                r.created_at
+              )
+                .toLocaleString(
+                  'ja-JP',
+                  {
+                    timeZone:
+                      'Asia/Tokyo'
+                  }
+                );
 
-      const list =
-        rows
-          .map(
-            r => `
+            const fileButton =
+              r.filename
+                ? `
+                <p>
+                <a
+                  href="/admin/download/${r.id}"
+                >
+                  ${escapeHtml(
+                    r.originalname ||
+                    'ファイルをダウンロード'
+                  )}
+                </a>
+                </p>
+                `
+                : '';
 
-<article class="request">
+            return `
 
-<div class="request-top">
+<div class="admin-card">
+
+<div class="admin-top">
 
 <div>
 
-<span class="status">
-${esc(r.status)}
+<span class="badge">
+${escapeHtml(
+  r.status || 'new'
+)}
 </span>
 
-<h2>
-#${r.id} ${esc(r.name)}
-</h2>
+<h3>
+#${r.id}
+${escapeHtml(r.name)}
+</h3>
 
-<p>
+<div class="small">
 
-${esc(
-  r.created_at instanceof Date
-    ? r.created_at.toLocaleString(
-        'ja-JP',
-        {
-          timeZone: 'Asia/Tokyo'
-        }
-      )
-    : r.created_at
-)}
+${escapeHtml(created)}
+・
 
-·
-
-<a href="mailto:${esc(r.email)}">
-${esc(r.email)}
+<a href="mailto:${escapeHtml(r.email)}">
+${escapeHtml(r.email)}
 </a>
 
-</p>
+</div>
 
 </div>
 
 <form
-method="post"
-action="/admin/status"
->
-
-<input
-type="hidden"
-name="id"
-value="${r.id}"
+  class="status-form"
+  action="/admin/status/${r.id}"
+  method="POST"
 >
 
 <select name="status">
 
 <option
-${r.status === 'new'
-  ? 'selected'
-  : ''}
-value="new"
+  value="new"
+  ${r.status === 'new'
+    ? 'selected'
+    : ''}
 >
 new
 </option>
 
 <option
-${r.status === 'in_progress'
-  ? 'selected'
-  : ''}
-value="in_progress"
+  value="checking"
+  ${r.status === 'checking'
+    ? 'selected'
+    : ''}
 >
-in_progress
+checking
 </option>
 
 <option
-${r.status === 'done'
-  ? 'selected'
-  : ''}
-value="done"
+  value="contacted"
+  ${r.status === 'contacted'
+    ? 'selected'
+    : ''}
+>
+contacted
+</option>
+
+<option
+  value="working"
+  ${r.status === 'working'
+    ? 'selected'
+    : ''}
+>
+working
+</option>
+
+<option
+  value="done"
+  ${r.status === 'done'
+    ? 'selected'
+    : ''}
 >
 done
 </option>
@@ -748,183 +1614,192 @@ done
 
 </div>
 
-<div class="request-grid">
+<div class="info-grid">
 
-<p>
-<b>種類</b><br>
-${esc(r.type)}
-</p>
+<div class="info">
 
-<p>
-<b>プラン</b><br>
-${esc(r.plan)}
-</p>
+<strong>
+種類
+</strong>
 
-<p>
-<b>納期</b><br>
-${esc(r.deadline)}
-</p>
-
-<p>
-<b>予算</b><br>
-${esc(r.budget)}
-</p>
+${escapeHtml(
+  r.type || '未指定'
+)}
 
 </div>
 
-<p class="message">
-${esc(r.message).replace(/\n/g, '<br>')}
-</p>
+<div class="info">
 
-${
-  r.filename
-    ? `
-<p>
-📎
-<a
-href="/admin/files/${encodeURIComponent(r.filename)}"
->
-${esc(r.originalname)}
-</a>
-</p>
-`
-    : ''
-}
+<strong>
+プラン
+</strong>
 
-</article>
+${escapeHtml(
+  r.plan || '未指定'
+)}
 
-            `
-          )
+</div>
+
+<div class="info">
+
+<strong>
+納期
+</strong>
+
+${escapeHtml(
+  r.deadline || '未指定'
+)}
+
+</div>
+
+<div class="info">
+
+<strong>
+予算
+</strong>
+
+${escapeHtml(
+  r.budget || '未指定'
+)}
+
+</div>
+
+</div>
+
+<div class="message">
+${escapeHtml(
+  r.message || ''
+)}
+</div>
+
+${fileButton}
+
+</div>
+`;
+          })
           .join('');
 
-      res.send(`
-<!doctype html>
+      res.send(
+        layout(
+          '依頼管理 | EDIT LAB',
+          `
 
-<meta charset="utf-8">
+<main class="section">
 
-<title>
-依頼管理
-</title>
+<div class="container">
 
-<link
-rel="stylesheet"
-href="/style.css"
+<div
+  style="
+    display:flex;
+    justify-content:space-between;
+    align-items:flex-start;
+    gap:20px;
+  "
 >
-
-<header class="header">
-
-<a
-class="logo"
-href="/"
->
-EDIT LAB
-</a>
 
 <div>
 
-管理画面
-
-<form
-style="display:inline"
-method="post"
-action="/admin/logout"
->
-
-<button
-class="logout"
-type="submit"
->
-ログアウト
-</button>
-
-</form>
-
+<div class="eyebrow">
+DASHBOARD
 </div>
 
-</header>
-
-<main class="admin">
-
-<div class="admin-head">
-
-<div>
-
-<p class="eyebrow">
-DASHBOARD
-</p>
-
-<h1>
+<h2>
 依頼管理
-</h1>
+</h2>
 
 <p>
-${rows.length}件の依頼
+${requests.length}件の依頼
 </p>
 
 </div>
 
+<div>
+
 <a
-class="btn secondary"
-href="/"
+  class="button white"
+  href="/"
+  target="_blank"
 >
 サイトを見る
 </a>
 
 </div>
 
-${
-  list ||
-  '<div class="empty">まだ依頼はありません。</div>'
-}
+</div>
+
+<div style="margin-top:40px">
+
+${cards || `
+
+<div class="notice">
+まだ依頼はありません。
+</div>
+
+`}
+
+</div>
+
+</div>
 
 </main>
-      `);
 
-    } catch (e) {
+<footer class="footer">
 
-      console.error(e);
+<div class="container">
+
+<a href="/admin/logout">
+ログアウト
+</a>
+
+</div>
+
+</footer>
+`
+        )
+      );
+
+    } catch (error) {
+
+      console.error(
+        'Admin error:',
+        error
+      );
 
       res
         .status(500)
         .send(
-          'データベースの読み込みに失敗しました。'
+          '管理画面の読み込みに失敗しました。'
         );
-
     }
-
   }
 );
 
 // ======================================================
-// ステータス変更
+// ステータス更新
 // ======================================================
 
 app.post(
-  '/admin/status',
-
-  auth,
-
+  '/admin/status/:id',
+  requireAdmin,
   async (req, res) => {
 
     try {
 
-      const allowedStatuses = [
-        'new',
-        'in_progress',
-        'done'
-      ];
+      const allowed =
+        [
+          'new',
+          'checking',
+          'contacted',
+          'working',
+          'done'
+        ];
 
-      if (
-        !allowedStatuses.includes(
+      const status =
+        allowed.includes(
           req.body.status
         )
-      ) {
-
-        return res
-          .status(400)
-          .send('不正なステータスです。');
-
-      }
+          ? req.body.status
+          : 'new';
 
       await db.query(
         `
@@ -933,25 +1808,28 @@ app.post(
         WHERE id = $2
         `,
         [
-          req.body.status,
-          req.body.id
+          status,
+          req.params.id
         ]
       );
 
-      res.redirect('/admin');
+      res.redirect(
+        '/admin'
+      );
 
-    } catch (e) {
+    } catch (error) {
 
-      console.error(e);
+      console.error(
+        'Status update error:',
+        error
+      );
 
       res
         .status(500)
         .send(
           'ステータス更新に失敗しました。'
         );
-
     }
-
   }
 );
 
@@ -960,55 +1838,125 @@ app.post(
 // ======================================================
 
 app.get(
-  '/admin/files/:name',
+  '/admin/download/:id',
+  requireAdmin,
+  async (req, res) => {
 
-  auth,
+    try {
 
-  (req, res) => {
+      const result =
+        await db.query(
+          `
+          SELECT
+            filename,
+            originalname
+          FROM requests
+          WHERE id = $1
+          `,
+          [
+            req.params.id
+          ]
+        );
 
-    const safe =
-      path.basename(
-        req.params.name
+      if (
+        result.rows.length === 0
+      ) {
+
+        return res
+          .status(404)
+          .send(
+            '依頼が見つかりません。'
+          );
+      }
+
+      const requestData =
+        result.rows[0];
+
+      if (
+        !requestData.filename
+      ) {
+
+        return res
+          .status(404)
+          .send(
+            'ファイルがありません。'
+          );
+      }
+
+      const filePath =
+        path.join(
+          uploadDir,
+          requestData.filename
+        );
+
+      if (
+        !fs.existsSync(filePath)
+      ) {
+
+        return res
+          .status(404)
+          .send(
+            'アップロードファイルがサーバー上にありません。'
+          );
+      }
+
+      res.download(
+        filePath,
+        requestData.originalname ||
+        requestData.filename
       );
 
-    const filePath =
-      path.join(
-        uploadDir,
-        safe
+    } catch (error) {
+
+      console.error(
+        'Download error:',
+        error
       );
 
-    if (
-      !fs.existsSync(filePath)
-    ) {
-
-      return res.sendStatus(404);
-
+      res
+        .status(500)
+        .send(
+          'ダウンロードに失敗しました。'
+        );
     }
-
-    res.download(filePath);
-
   }
 );
 
 // ======================================================
-// エラー処理
+// 404
 // ======================================================
 
 app.use(
-  (err, req, res, next) => {
-
-    console.error(err);
+  (req, res) => {
 
     res
-      .status(400)
+      .status(404)
       .send(
-        '<p>' +
-        String(err.message)
-          .replace(/[<>]/g, '') +
-        '</p>' +
-        '<p><a href="/">戻る</a></p>'
-      );
+        layout(
+          'ページが見つかりません',
+          `
 
+<main class="section">
+
+<div class="container">
+
+<h2>
+ページが見つかりません。
+</h2>
+
+<a
+  class="button"
+  href="/"
+>
+トップへ戻る
+</a>
+
+</div>
+
+</main>
+`
+        )
+      );
   }
 );
 
@@ -1016,35 +1964,27 @@ app.use(
 // 起動
 // ======================================================
 
-async function start() {
-
-  try {
-
-    await initDatabase();
+initDatabase()
+  .then(() => {
 
     app.listen(
       PORT,
-
+      '0.0.0.0',
       () => {
 
         console.log(
           `EDIT LAB running on port ${PORT}`
         );
-
       }
     );
 
-  } catch (e) {
+  })
+  .catch(error => {
 
     console.error(
-      'Database startup error:',
-      e
+      'Database initialization failed:',
+      error
     );
 
     process.exit(1);
-
-  }
-
-}
-
-start();
+  });
